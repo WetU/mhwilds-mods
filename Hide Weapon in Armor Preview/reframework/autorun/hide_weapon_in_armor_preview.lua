@@ -14,7 +14,7 @@ end
 --- @return boolean
 local function is_valid_config(input)
   if not input then return false end
-  if type(input.isEnabled) == 'boolean' then return false end
+  if type(input.isEnabled) ~= 'boolean' then return false end
   return true
 end
 
@@ -30,14 +30,24 @@ end
 
 load_config()
 
-local PLAYER_MANAGER = sdk.get_managed_singleton('app.PlayerManager')
+-- Retrieve the player's character _very safely_.
+local function get_hunter_character()
+  local PlayerManager = sdk.get_managed_singleton('app.PlayerManager')
+  if not PlayerManager then return end
+  local player = PlayerManager:getMasterPlayer()
+  if not player then return end
+  return player:get_Character()
+end
 
 --- @param is_visible boolean
 local function toggle_weapon_visibility(is_visible)
   log.info('[HideWeaponInArmorPreview] Toggling weapon visibility to ' .. tostring(is_visible))
 
-  local player = PLAYER_MANAGER:getMasterPlayer()
-  local hunter = player:get_Character()
+  local ok, hunter = pcall(get_hunter_character)
+  if not ok or not hunter then
+    log.debug('[HideWeaponInArmorPreview] Player character not found. Exiting.')
+    return
+  end
 
   local weapons = {
     hunter:get_Weapon(),
@@ -65,12 +75,12 @@ local function on_open_armor_preview()
   return sdk.PreHookResult.CALL_ORIGINAL
 end
 
-local function on_close_armor_preview()
+local function on_close_armor_preview(retval)
   is_armor_preview_open = false
   if config.isEnabled then
     toggle_weapon_visibility(true)
   end
-  return sdk.PreHookResult.CALL_ORIGINAL
+  return retval
 end
 
 sdk.hook(ARMOR_PREVIEW:get_method('onOpenCore'), on_open_armor_preview, nil)
@@ -83,7 +93,8 @@ re.on_draw_ui(function()
     local changed, isEnabled = imgui.checkbox('Enabled', config.isEnabled)
     if changed then
       if is_armor_preview_open then
-        toggle_weapon_visibility(not isEnabled)
+        -- This really shouldn't ever throw, but wrap this just in case to ensure that tree_pop() always gets hit.
+        pcall(toggle_weapon_visibility, not isEnabled)
       end
 
       config.isEnabled = isEnabled
