@@ -1,99 +1,102 @@
-local function wrapped_pcall(fn)
-  local ok, result = pcall(fn)
-  if not ok then
-    log.debug("ERROR: " .. tostring(result))
+--- @class System.Collections.Generic.List<T>: { _items: T[], _size: integer }
+
+--- @class Vector3f: { x: number, y: number, z: number }
+
+--- @class REManagedObject
+--- @field call fun(REManagedObject, ...): any
+--- @field get_field fun(REManagedObject, string): any
+
+--- @class app.cGUIBeaconGimmick : REManagedObject
+--- @field getPos fun(): Vector3f
+
+--- @class app.cStartPointInfo : REManagedObject
+--- @field get_BeaconGimmick fun(): app.cGUIBeaconGimmick
+
+--- @class app.GUI050001 : REManagedObject
+--- @field get_CurrentStartPointList fun(): System.Collections.Generic.List<app.cStartPointInfo>
+--- @field get_QuestOrderParam fun(): { QuestViewData: app.cGUIQuestViewData }
+
+--- Returns the approximate position of the first target monster for a quest.
+--- Target monster locations are encoded only as area numbers (e.g. Uth Duna usually spawns in area 17);
+--- in order to convert this to a position, we need to then retrieve the map data for the quest stage,
+--- which contains area icon positions (which are presumably used to draw the actual monster icon on the map).
+--- @param quest_accept_ui app.GUI050001
+--- @return Vector3f | nil
+local function get_target_pos(quest_accept_ui)
+  --- @class app.cGUIQuestViewData : REManagedObject
+  --- @field get_Stage fun(): number app.FieldDef.STAGE
+  --- @field get_TargetEmStartArea fun(): { m_value: integer }[]
+  local quest_view_data = quest_accept_ui:get_QuestOrderParam().QuestViewData
+
+  local target_em_start_areas = quest_view_data:get_TargetEmStartArea()
+  local target_em_start_area = nil
+  for _, start_area in pairs(target_em_start_areas) do
+    target_em_start_area = start_area.m_value
+    break
   end
-  return ok and result or nil
-end
 
-local function inspect(thing)
-  local managed_object = wrapped_pcall(function() return sdk.to_managed_object(thing) end)
-  if not managed_object then
-    if type(thing) == 'userdata' then
-      log.debug('userdata ' .. tostring(sdk.to_int64(thing)))
-    else
-      log.debug(tostring(type(thing)))
-    end
-    return
-  end
-  local full_name = wrapped_pcall(function()
-    return tostring(managed_object:get_type_definition():get_full_name())
-  end)
-  if full_name then
-    log.debug(tostring(full_name))
-  end
-end
-
--- local start_point_info_list = quest_menu:call('get_CurrentStartPointList')
--- if start_point_info_list ~= nil then
---   log.debug('start point info list:')
---   inspect(start_point_info_list)
---   local fields = sdk.to_managed_object(start_point_info_list):get_type_definition():get_fields()
---   for i, field in pairs(fields) do
---     log.debug('ITERATING OVER FIELD')
---     log.debug('name: ' .. tostring(field:get_name()))
---     log.debug('type: ' .. tostring(field:get_type():get_full_name()))
---   end
---   -- System.Collections.Generic.List`1<app.cStartPointInfo>
--- end
-
---- @enum StartPointType
-local StartPointType = {
-  NONE = -1,
-  BASE_CAMP = 0,
-  TENT = 1,
-  TEMPORARY_CAMP = 2,
-}
-
-local function get_start_point_type(start_point_info)
-  local type = start_point_info:call('get_Type()')
-  for name, enum in pairs(StartPointType) do
-    if enum == type then
-      return name
-    end
-  end
-end
-
---
-local function get_start_points(quest_menu)
-  -- System.Collections.Generic.List`1<app.cStartPointInfo>
-  local start_point_list = quest_menu:call('get_CurrentStartPointList()')
-  if start_point_list == nil then return end
-  return sdk.to_managed_object(start_point_list)._items
-end
-
--- app.cStartPointInfo
--- app.cGUIBeaconGimmick
-local function get_beacon_gimmick(start_point_info)
-  local ok, result = pcall(function()
-    return start_point_info:call('get_BeaconGimmick()')
-  end)
-  if not ok or result == nil then
+  if target_em_start_area == nil then
+    log.debug("ERROR: No starting area found for target")
     return nil
   end
-  return sdk.to_managed_object(result)
-end
 
---- @param quest_menu unknown
---- @param index number
-local function set_start_point_index(quest_menu, index)
-  log.debug('Setting start point index to ' .. tostring(index))
-  local ok, result = pcall(function()
-    quest_menu:call('setCurrentSelectStartPointIndex(System.Int32)', index)
-    quest_menu:call('updateStartPointText()')
-  end)
-  if not ok then
-    log.debug('ERROR: Failed to set start point index. ' .. tostring(result))
+  local quest_stage = quest_view_data:get_Stage()
+
+  --- @class app.cGUIMapController : REManagedObject
+  --- @field _MapStageDrawData app.user_data.MapStageDrawData
+  local map_controller = sdk.get_managed_singleton('app.GUIManager'):get_MAP3D()
+  --- @class app.user_data.MapStageDrawData : REManagedObject
+  local map_stage_draw_data = map_controller._MapStageDrawData
+
+  --- @class app.user_data.MapStageDrawData.cDrawData : REManagedObject
+  --- @field _AreaIconPosList System.Collections.Generic.List<app.user_data.MapStageDrawData.cAreaIconData>
+  local quest_stage_draw_data = map_stage_draw_data:call('getDrawData(app.FieldDef.STAGE)', quest_stage)
+  if quest_stage_draw_data == nil then
+    log.debug("ERROR: Couldn't find draw data for quest stage " .. tostring(quest_stage))
+    return nil
+  end
+
+  local area_icon_pos_list = quest_stage_draw_data._AreaIconPosList
+  --- @class app.user_data.MapStageDrawData.cAreaIconData : REManagedObject
+  --- @field _AreaIconPos Vector3f
+  --- @field _AreaNum integer
+  for _, area_icon_data in pairs(area_icon_pos_list._items) do
+    if area_icon_data._AreaNum == target_em_start_area then
+      return area_icon_data._AreaIconPos
+    end
   end
 end
 
--- Grab the quest_menu instance on open and store it in the ephemeral hook storage for access in the `post` hook:
+--- Find the closest start point to the target position and return its index in its list.
+--- @param target_pos Vector3f
+--- @param start_points app.cStartPointInfo[]
+--- @return integer
+local function get_closest_start_point_index(target_pos, start_points)
+  local closest_distance = math.huge
+  local closest_index = 0
+  local target_x, target_y, target_z = target_pos.x, target_pos.y, target_pos.z
+
+  for index, start_point in ipairs(start_points) do
+    local beacon_gimmick = start_point:get_BeaconGimmick()
+    local beacon_pos = beacon_gimmick:getPos()
+    local dx, dy, dz = beacon_pos.x - target_x, beacon_pos.y - target_y, beacon_pos.z - target_z
+    local d2 = dx * dx + dy * dy + dz * dz
+    if d2 < closest_distance then
+      closest_distance = d2
+      closest_index = index
+    end
+  end
+
+  return closest_index
+end
+
+-- Grab the quest_accept_ui instance on open and store it in the ephemeral hook storage for access in the `post` hook:
 -- https://cursey.github.io/reframework-book/api/thread.html#threadget_hook_storage
 local function on_pre_open(args)
   log.debug('on_pre_open')
 
   local storage = thread.get_hook_storage()
-  storage['quest_menu'] = sdk.to_managed_object(args[2])
+  storage['quest_accept_ui'] = sdk.to_managed_object(args[2])
 
   return sdk.PreHookResult.CALL_ORIGINAL
 end
@@ -101,165 +104,227 @@ end
 local function on_post_open(retval)
   log.debug('on_post_open')
 
-  local quest_menu = thread.get_hook_storage()['quest_menu']
-  if quest_menu == nil then
-    log.debug('ERROR: quest_menu is nil')
+  --- @type app.GUI050001
+  local quest_accept_ui = thread.get_hook_storage()['quest_accept_ui']
+  if quest_accept_ui == nil then
+    log.debug('ERROR: quest_accept_ui is nil')
     return retval
   end
 
-  local quest_order_param = quest_menu:get_QuestOrderParam()
-  local quest_view_data = quest_order_param.QuestViewData -- app.cGUIQuestViewData
-
-  local stage = quest_view_data:call('get_Stage()')
-  log.debug('STAGE: ' .. tostring(stage))
-
-  local target_start_area = quest_view_data:call('get_TargetEmStartArea()')
-
-  local first_target_area = nil
-  for k, v in pairs(target_start_area) do
-    if first_target_area == nil then
-      first_target_area = v.m_value
-    end
-    log.debug(tostring(v.m_value)) -- zone number (e.g. 17 for uth duna)
-    -- log.debug(tostring(v))
-    -- local fields = v:get_type_definition():get_fields()
-    -- for i, field in pairs(fields) do
-    --   log.debug('ITERATING OVER FIELD')
-    --   log.debug('name: ' .. tostring(field:get_name()))
-    --   log.debug('type: ' .. tostring(field:get_type():get_full_name()))
-    -- end
-  end
-
-  if first_target_area == nil then
+  local start_point_list = quest_accept_ui:get_CurrentStartPointList()
+  -- Exit early if the list only has 1 item:
+  if start_point_list == nil or start_point_list._size <= 1 then
     return retval
   end
 
-  -- for k, v in pairs(getmetatable(elements)) do
-  --   log.debug(k .. ': ' .. tostring(v))
-  -- end
-  -- local mission_id = quest_view_data:get_MissionID()
-  -- local enemies = mission_manager:call('getQuestDataFromMissionId(app.MissionIDList.ID)', mission_id)
-  -- log.debug('ENEMIES?!')
-  -- inspect(enemies) -- app.cActiveQuestData
-
-  -- local accept_list = sdk.to_managed_object(quest_menu:get_field('_AcceptList'))
-  -- local start_point_list = sdk.to_managed_object(quest_menu:get_field('_StartPointList'))
-
-  local start_points = get_start_points(quest_menu)
-  if start_points == nil then
+  local target_pos = get_target_pos(quest_accept_ui)
+  if target_pos == nil then
     return retval
   end
 
-  local has_set_index = false
-
-  -- app.cGUIMapEmQuestCounterDummyIconController
-  -- app.user_data.MapStageDrawData.cAreaIconData getAreaIconDrawData(app.FieldDef.STAGE, System.Int32)
-
-  -- for index, start_point in pairs(start_points) do
-  --   log.debug('ITERATING OVER START POINT ' .. tostring(index))
-  --   local start_point_info = sdk.to_managed_object(start_point)
-  --   if start_point_info ~= nil then
-  --     local beacon_gimmick = get_beacon_gimmick(start_point_info)
-  --     if beacon_gimmick ~= nil then
-  --       log.debug('beacon_gimmick retrieved for start_point_info')
-  --       log.debug('start point ID: ' .. tostring(start_point_info.CampID))
-  --       log.debug('start_point type: ' .. get_start_point_type(start_point_info))
-  --       if index > 1 and not has_set_index then
-  --         has_set_index = true
-  --         set_start_point_index(quest_menu, index)
-  --       end
-  --       -- -- log.debug(beacon_gimmick:get_type_definition():get_full_name())
-  --       -- --- @class Vector3f
-  --       -- --- @field x number
-  --       -- --- @field y number
-  --       -- --- @field z number
-  --       -- local pos = beacon_gimmick:call('getPos()')
-  --       -- local xyz = {
-  --       --   x = pos.x,
-  --       --   y = pos.y,
-  --       --   z = pos.z,
-  --       -- }
-  --       -- for key, value in pairs(xyz) do
-  --       --   log.debug(key .. ': ' .. tostring(value))
-  --       -- end
-  --     end
-  --   end
-  -- end
-
-  local gui_manager = sdk.get_managed_singleton('app.GUIManager')
-  -- app.cGUIMapController
-  local map_controller = gui_manager:get_MAP3D()
-  -- app.user_data.MapStageDrawData
-  local map_stage_draw_data = map_controller:get_field('_MapStageDrawData')
-  local stage_draw_data = map_stage_draw_data:call('getDrawData(app.FieldDef.STAGE)', stage)
-  if stage_draw_data == nil then
-    return retval
+  local closest_start_point_index = get_closest_start_point_index(target_pos, start_point_list._items)
+  if closest_start_point_index ~= nil and closest_start_point_index > 0 then
+    quest_accept_ui:call('setCurrentSelectStartPointIndex(System.Int32)', closest_start_point_index)
   end
-
-  local area_icon_pos_list = stage_draw_data:get_field('_AreaIconPosList')
-  for i, j in pairs(area_icon_pos_list._items) do
-    -- app.user_data.MapStageDrawData.cAreaIconData
-    local area_icon_data = sdk.to_managed_object(j)
-    if (area_icon_data._AreaNum == first_target_area) then
-      local pos = area_icon_data._AreaIconPos
-      local xyz = {
-        x = pos.x,
-        y = pos.y,
-        z = pos.z,
-      }
-      for key, value in pairs(xyz) do
-        log.debug(key .. ': ' .. tostring(value))
-      end
-    end
-  end
-
-  -- _AreaNum, _AreaIconPos
-
-  -- local area_draw_data = map_stage_draw_data:call('getDrawData(System.Int32)', first_target_area)
-  -- inspect(area_draw_data)
-  -- inspect(map_stage_draw_data)
-
-  -- for k, v in pairs(map_stage_draw_data._DrawDatas) do
-  --   log.debug('ITERATING OVER DRAW DATAS' .. tostring(k))
-  --   local area_data = sdk.to_managed_object(v):get_field('_AreaIconPosList')
-  --   for i, j in pairs(area_data._items) do
-  --     log.debug(tostring(sdk.to_managed_object(j)._DrawAreaNum))
-  --   end
-  -- end
-
-  -- local mission_target_list = map_controller:call('getMissionTargetListEm()') -- also ...ListEm()
-  -- local mission_target_obj = sdk.to_managed_object(mission_target_list)
-  -- local mission_targets = mission_target_obj._items
-  -- log.debug(mission_target_obj._size)
-  -- -- log.debug(mission_target_obj.get_size())
-
-  -- for k, v in pairs(mission_targets) do
-  --   log.debug('ITERATING OVER MISSION TARGET' .. tostring(k))
-  --   inspect(v)
-  -- end
-
-  -- log.debug(map:get_type_definition():get_full_name())
-  -- app.cGUIMapNaviPointController.cMapNaviData - gui_manager:getMapNaviData()
-
-  -- local mission_manager = sdk.get_managed_singleton('app.MissionManager')
-  -- local enemies = mission_manager:getAcceptQuestTargetBrowsers()
-  -- log.debug('ENEMIES???')
-  -- inspect(enemies)
-  -- notes
-  -- app.MissionManager (singleton)
-    -- app.MissionBeaconController - getMissionBeaconController
-    -- app.cActiveQuestData - getQuestDataFromMissionId(app.MissionIDList.ID)
-    -- app.cMapContext_Enemy[] - getExQuest
-
-    -- app.cEnemyBrowser[] - getAcceptQuestTargetBrowsers()
-
-  -- app.cGUIQuestOrderParam.QuestViewData
-  -- app.cGUIQuestViewData.get_MissionID
-
   return retval
 end
 
-local quest_menu_t = sdk.find_type_definition('app.GUI050001')
-sdk.hook(quest_menu_t:get_method('onOpen'), on_pre_open, on_post_open)
+local quest_accept_ui_t = sdk.find_type_definition('app.GUI050001')
+sdk.hook(quest_accept_ui_t:get_method('onOpen()'), on_pre_open, on_post_open)
 
 log.debug('Initialized ABC')
+
+-- NOTES:
+
+-- quest_accept_ui:incrementSelectStartPointIndex()
+
+-- local sp = quest_accept_ui:getCurrentSelectStartPoint()
+-- log.debug(tostring(sp == closest_start_point))
+-- -- local delay = tonumber(os.clock() + 0.1)
+-- -- while os.clock() < delay do end
+-- -- quest_accept_ui:setSelectFloorFastTravelGmLocated(closest_start_point:get_BeaconGimmick())
+-- local floor = quest_accept_ui:mapForceSelectFloor()
+-- log.debug('maybe floor num: ' .. floor)
+
+-- log.debug('closest start point:')
+-- inspect(closest_start_point)
+
+-- local ok, result = pcall(function() quest_accept_ui:call('setSelectFloorFastTravelGmLocated(app.cGUIBeaconBase)', closest_start_point:get_BeaconGimmick()) end)
+-- if not ok then
+--   log.debug('result ' .. tostring(result))
+-- end
+
+-- quest_accept_ui:mapForceSelectFloor()
+-- quest_accept_ui:call('setActiveStartPointList(System.Boolean)', true)
+-- local accept_list = quest_accept_ui._AcceptList
+-- local input_ctrl = accept_list._InputCtrl
+-- ace.cGUIInputCtrl_FluentItemsControlLink`2<app.GUIID.ID,app.GUIFunc.TYPE>
+-- inspect(input_ctrl)
+-- log.debug('currently selecting item at index ' .. tostring(input_ctrl:getSelectedIndex()))
+
+-- ace.cGUIInputCtrl_FluentItemsControlLink`2<app.GUIID.ID,app.GUIFunc.TYPE>.mouseEvent(via.gui.MouseEventArgs)
+
+-- app.GUI060008
+-- get_GUIGround()
+
+-- app.cGUIMapController.forceInteractBeacon(app.cGUIBeaconBase)
+
+-- mapForceSelectFloor(System.Func`1<System.Int32>)
+
+
+-- local quest_view_data = quest_accept_ui:get_QuestOrderParam().QuestViewData
+-- --- @class app.cGUIMapController : REManagedObject
+-- local map_controller = sdk.get_managed_singleton('app.GUIManager'):get_MAP3D()
+-- map_controller:clearQuestBoardDummyIcon()
+-- map_controller:setQuestBoardDummyIcon(quest_view_data)
+
+
+-- quest_accept_ui:call('setActiveStartPointList(System.Boolean)', true)
+-- local delay = tonumber(os.clock() + 0.1)
+-- while os.clock() < delay do
+--   -- log.debug('DELAYING')
+-- end
+-- quest_accept_ui:call('setActiveStartPointList(System.Boolean)', false)
+
+-- quest_accept_ui:changeDarwSegmentDefault()
+-- quest_accept_ui:call('clearStartPointGimmickDraw()')
+-- quest_accept_ui:call('clearFocusStartPointIcon()')
+-- quest_accept_ui:call('mapForceSelectFloor()')
+-- quest_accept_ui:call('setActiveStartPointList(System.Boolean)', false)
+-- quest_accept_ui:call('changeDrawSegmentForStartPointList()')
+-- quest_accept_ui:setActiveStartPointList()
+-- quest_accept_ui:updateState()
+-- local accept_list = sdk.to_managed_object(quest_accept_ui:get_field('_AcceptList'))
+-- accept_list._OptionalDisplayItem_StartPoint:decide()
+-- updateStartPointText()
+-- local gui_manager = sdk.get_managed_singleton('app.GUIManager')
+-- gui_manager:call('requestMoveInputAcceptList()')
+-- local ok, result = pcall(function()
+--   -- quest_accept_ui:call('setActiveStartPointList(System.Boolean)', true)
+--   -- quest_accept_ui:call('initStartPoint()')
+--   -- quest_accept_ui:call('setFocusStartPointIcon(System.Int32)', index)
+--   -- log.debug('SETTING FOCUS START POINT ICON')
+--   -- quest_accept_ui:call('updateStartPointText()')
+-- end)
+-- if not ok then
+--   log.debug('ERROR: Failed to set start point index. ' .. tostring(result))
+-- end
+
+
+-- local current_floor_num = map_controller:getCurrentStageFloorNum()
+-- log.debug('current floor num: ' .. tostring(current_floor_num))
+-- map_controller:setSelectFloor(floor)
+
+-- current_floor_num = map_controller:getCurrentStageFloorNum()
+-- log.debug('current floor num: ' .. tostring(current_floor_num))
+
+-- map_controller:setSelectFloor(System.Int32)
+-- setImmediateSelectFloor(System.Int32)
+-- -- map_controller:call('forceInteractBeacon(app.cGUIBeaconBase)', closest_start_point:get_BeaconGimmick())
+-- local map_ground = map_controller:get_GUIGround()
+-- inspect(map_ground)
+
+-- local floor_list = map_ground._FloorController._FloorListCtrl
+-- inspect(floor_list)
+-- floor_list:call('update()')
+
+-- map_ground:clearColorSummary()
+-- map_ground:applyColorSummary()
+-- map_ground:updateSummary()
+-- setSelectFloorFastTravelGmLocated(app.cGUIBeaconBase)
+-- app.GUI050001.<>c__DisplayClass23_0.<setSelectFloorFastTravelGmLocated>b__0(System.Object, ace.GUIBaseCore)
+-- updateRequestQuestEmArea(app.GUI060008.cRequestQuestEmArea)
+
+-- app.cGUI3DMapFloorListController update()
+
+-- _FloorListCtrl
+-- app.cGUI3DMapStageModelController - app.GUI060008._FloorController
+
+-- ace.cGUIInputCtrl`2<app.GUIID.ID,app.GUIFunc.TYPE>.onMouseDecide
+-- input_ctrl:call('onMouseDecide(via.gui.SelectItem)', input_ctrl:getSelectedItem())
+-- getItemFromListIndex(System.Int32, System.Int32)
+-- funcMouseDecideEvent()
+-- funcCancelEvent()
+
+-- local fic_link = input_ctrl._FicLink
+-- inspect(fic_link)
+-- input_ctrl:call('changeItemIndexToFicIndex(System.UInt32)', closest_start_point_index)
+-- input_ctrl:call('<mouseEvent>g__selectItem|9_0(ace.cGUIInputCtrl_FluentItemsControlLink`2.<>c__DisplayClass9_0<app.GUIID.ID,app.GUIFunc.TYPE>)', fic_link, 0)
+-- <mouseEvent>g__selectItem|9_0(ace.cGUIInputCtrl_FluentItemsControlLink`2.<>c__DisplayClass9_0<app.GUIID.ID,app.GUIFunc.TYPE>)
+
+-- fic_link:funcDecideEvent()
+
+
+-- fic_link:call('executeCallback()')
+-- onMouseDecide(via.gui.SelectItem)
+-- requestCallDecide()
+--
+
+-- inspect(input_ctrl)
+-- input_ctrl:call('selectNextItem()')
+-- local fls_list = input_ctrl._FlsList
+-- inspect(fls_list)
+
+-- accept_list:call('<callbackDecide>b__44_0(ace.GUIBaseCore)', sdk.typeof('ace.GUIBaseCore'))
+
+-- local start_point_list_ui = quest_accept_ui._StartPointList
+-- local input_ctrl = start_point_list_ui._InputCtrl
+-- inspect(input_ctrl)
+-- -- set_SelectedIndex(System.UInt32)
+-- local fls_list = input_ctrl:get_FlsList()
+-- local item = fls_list:call('getItemByGlobalIndex(System.Int32)', closest_start_point_index)
+-- inspect(item)
+-- input_ctrl:selectItemOnMouseEvent(item)
+-- input_ctrl:call('selectItemOnMouseEvent(via.gui.SelectItem)', item)
+-- selectItemOnMouseEvent(via.gui.SelectItem)
+-- fls_list:set_SelectedIndex(closest_start_point_index)
+-- input_ctrl:selectNextItem()
+
+-- inspect(fls_list)
+-- for k, v in pairs(fls_list) do
+--   log.debug(tostring(k) .. ': ' .. tostring(v))
+-- end
+
+-- get_FlsList()
+-- ace.cGUIInputCtrl_FluentScrollList`2<app.GUIID.ID,app.GUIFunc.TYPE>.ctrlSelectionChanged
+-- input_ctrl:executeCallback()
+-- ace.cGUIInputCtrl_FluentScrollList`2<app.GUIID.ID,app.GUIFunc.TYPE>.requestSelectIndexCore
+-- local ref_window = start_point_list_ui._RefWindowPanel
+-- -- inspect(ref_window) -- via.gui.Panel
+-- input_ctrl:call('selectNextItem()')
+-- input_ctrl:call('setInOutState()')
+-- inspect(input_ctrl) -- ace.cGUIInputCtrl_FluentScrollList`2<app.GUIID.ID,app.GUIFunc.TYPE>
+-- local fls_list = input_ctrl._FlsList
+-- inspect(fls_list)
+
+-- mapForceSelectFloor()
+-- app.cGUIMapController.mapForceSelectFloor(System.Func`1<System.Int32>)
+
+-- input_ctrl:changeItemNumFluent(closest_start_point_index)
+-- changeItemNumFluent(System.UInt32, System.Boolean)
+
+-- input_ctrl:funcMouseDecideEvent()
+-- input_ctrl:executeCallback()
+-- input_ctrl:requestCallDecide()
+-- input_ctrl:funcDecideEvent()
+
+-- via.gui.FluentItemsControlLink
+
+-- callbackDecide(via.gui.Control, via.gui.SelectItem, System.UInt32)
+
+
+-- _OptionalDisplayItem_StartPoint
+
+
+-- local accept_list_panel = accept_list._RefWindowPanel
+-- inspect(accept_list_panel)
+-- ace.cSafeEvent`3.cElement<via.gui.Control,via.gui.SelectItem,System.UInt32>.execute(via.gui.Control, via.gui.SelectItem, System.UInt32)
+
+-- local start_point_item = accept_list._OptionalDisplayItem_StartPoint
+-- inspect(start_point_item)
+-- local inputCtrl = accept_list._InputCtrl
+-- inspect(inputCtrl)
+
+-- local start_point_list = sdk.to_managed_object(quest_accept_ui:get_field('_StartPointList'))
+-- accept_list:call('updateStartPointText()')
+-- start_point_list:call('setActive(System.Boolean)', true)
