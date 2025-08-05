@@ -1,7 +1,7 @@
 local CONFIG_PATH = 'hide_weapon_in_armor_preview.json'
 
---- @class Config
---- @field isEnabled boolean
+---@class Config
+---@field isEnabled boolean
 local config = {
   isEnabled = true,
 }
@@ -10,8 +10,8 @@ local function save_config()
   json.dump_file(CONFIG_PATH, config)
 end
 
---- @param input Config
---- @return boolean
+---@param input Config
+---@return boolean
 local function is_valid_config(input)
   if not input then return false end
   if type(input.isEnabled) ~= 'boolean' then return false end
@@ -39,7 +39,7 @@ local function get_hunter_character()
   return player:get_Character()
 end
 
---- @param is_visible boolean
+---@param is_visible boolean
 local function toggle_weapon_visibility(is_visible)
   log.info('[HideWeaponInArmorPreview] Toggling weapon visibility to ' .. tostring(is_visible))
 

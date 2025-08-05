@@ -1,7 +1,7 @@
 local CONFIG_PATH = 'auto_select_nearest_camp.json'
 
---- @class Config
---- @field isEnabled boolean
+---@class Config
+---@field isEnabled boolean
 local config = {
   isEnabled = true,
 }
@@ -10,8 +10,8 @@ local function save_config()
   json.dump_file(CONFIG_PATH, config)
 end
 
---- @param input Config
---- @return boolean
+---@param input Config
+---@return boolean
 local function is_valid_config(input)
   if not input then return false end
   if type(input.isEnabled) ~= 'boolean' then return false end
@@ -162,7 +162,6 @@ end
 
 local quest_accept_ui_t = sdk.find_type_definition('app.GUI050001')
 sdk.hook(quest_accept_ui_t:get_method('onOpen()'), on_pre_open, on_post_open)
-
 
 re.on_config_save(save_config)
 
