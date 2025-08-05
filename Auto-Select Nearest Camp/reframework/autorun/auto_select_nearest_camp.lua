@@ -153,6 +153,8 @@ local function on_pre_open(args)
 end
 
 local function on_post_open(retval)
+  if not config.isEnabled then return retval end
+
   local ok, error = pcall(auto_select_nearest_camp)
   if not ok then log.debug('[Auto-Select Nearest Camp] ERROR: ' .. tostring(error)) end
   return retval
