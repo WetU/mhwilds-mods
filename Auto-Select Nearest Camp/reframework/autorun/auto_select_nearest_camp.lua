@@ -124,6 +124,14 @@ local hook_datas = {
   nearest_start_point_index = nil
 }
 
+local function clear_datas()
+  hook_datas = {
+    hasData = false,
+    obj = nil,
+    nearest_start_point_index = nil
+  };
+end
+
 local function select_next_camp()
   if not hook_datas.hasData then return end
 
@@ -135,6 +143,8 @@ local function select_next_camp()
 
   if input_ctrl:getSelectedIndex() ~= hook_datas.nearest_start_point_index then
     input_ctrl:selectNextItem()
+  else
+    clear_datas()
   end
 end
 
@@ -192,9 +202,9 @@ local acceptlist_t = sdk.find_type_definition('app.GUI050001_AcceptList')
 sdk.hook(acceptlist_t:get_method('onVisibleUpdate()'), nil, on_post_visibleupdate)
 
 local function on_post_close(retval)
-  hook_datas.hasData = false
-  hook_datas.obj = nil
-  hook_datas.nearest_start_point_index = nil
+  if hook_datas.hasData then
+    clear_datas()
+  end
   return retval
 end
 
