@@ -1,20 +1,23 @@
 local CONFIG_PATH = 'auto_select_nearest_camp.json'
 
----@class Config
+---@class AutoSelectNearestCampConfig
 ---@field isEnabled boolean
+---@field isDebug boolean
 local config = {
   isEnabled = true,
+  isDebug = false,
 }
 
 local function save_config()
   json.dump_file(CONFIG_PATH, config)
 end
 
----@param input Config
+---@param input AutoSelectNearestCampConfig
 ---@return boolean
 local function is_valid_config(input)
   if not input then return false end
   if type(input.isEnabled) ~= 'boolean' then return false end
+  if type(input.isDebug) ~= 'boolean' then return false end
   return true
 end
 
@@ -48,6 +51,26 @@ load_config()
 ---@field get_CurrentStartPointList fun(): System.Collections.Generic.List<app.cStartPointInfo>
 ---@field get_QuestOrderParam fun(): { QuestViewData: app.cGUIQuestViewData }
 
+---@param message string
+local function debug(message)
+  if not config.isDebug then return end
+  log.debug('[Auto-Select Nearest Camp] ' .. message)
+end
+
+---@param label string
+---@param pos Vector3f
+---@param distance? number
+local function debugPos(label, pos, distance)
+  if not config.isDebug then return end
+  log.debug('\n[Auto-Select Nearest Camp] Position of ' .. label .. ':')
+  log.debug('  - x:        ' .. tostring(pos.x))
+  log.debug('  - y:        ' .. tostring(pos.y))
+  log.debug('  - z:        ' .. tostring(pos.z))
+  if distance ~= nil then
+    log.debug('  - distance: ' .. tostring(distance))
+  end
+end
+
 -- Returns the approximate position of the first target monster for a quest.
 -- Target locations are encoded only as area numbers (e.g. Uth Duna usually spawns in area 17);
 -- in order to convert this to a position, we need to retrieve the map data for the quest stage,
@@ -68,7 +91,7 @@ local function get_target_pos(quest_accept_ui)
   end
 
   if target_em_start_area == nil then
-    log.debug("[Auto-Select Nearest Camp] ERROR: No starting area found for target")
+    debug('ERROR: No starting area found for target')
     return nil
   end
 
@@ -85,7 +108,7 @@ local function get_target_pos(quest_accept_ui)
   ---@field _AreaIconPosList System.Collections.Generic.List<app.user_data.MapStageDrawData.cAreaIconData>
   local stage_draw_data = map_stage_draw_data:call('getDrawData(app.FieldDef.STAGE)', stage)
   if stage_draw_data == nil then
-    log.debug("[Auto-Select Nearest Camp] ERROR: Couldn't find cDrawData for stage " .. tostring(stage))
+    debug("ERROR: Couldn't find cDrawData for stage " .. tostring(stage))
     return nil
   end
 
@@ -100,6 +123,10 @@ local function get_target_pos(quest_accept_ui)
   end
 end
 
+---@class DistanceMethod
+---@field call fun(_, _, Vector3f, Vector3f): number
+local get_distance = sdk.find_type_definition('via.MathEx'):get_method('distance(via.vec3, via.vec3)')
+
 -- Find the nearest start point to the target position and return its index in its list.
 ---@param target_pos Vector3f
 ---@param start_point_list System.Collections.Generic.List<app.cStartPointInfo>
@@ -107,17 +134,19 @@ end
 local function get_index_of_nearest_start_point(target_pos, start_point_list)
   local shortest_distance = math.huge
   local nearest_index = 0
-  local target_x, target_y, target_z = target_pos.x, target_pos.y, target_pos.z
+
+  debugPos('quest target', target_pos)
 
   for index, start_point in ipairs(start_point_list._items) do
     local beacon_gimmick = start_point:get_BeaconGimmick()
     local beacon_pos = beacon_gimmick:getPos()
-    local dx, dy, dz = beacon_pos.x - target_x, beacon_pos.y - target_y, beacon_pos.z - target_z
-    local d2 = dx * dx + dy * dy + dz * dz
+    local d2 = get_distance:call(nil, beacon_pos, target_pos)
     if d2 < shortest_distance then
       shortest_distance = d2
       nearest_index = index
     end
+
+    debugPos('start point at index ' .. tostring(index), beacon_pos, d2)
   end
 
   return nearest_index
@@ -156,7 +185,7 @@ local function on_post_open(retval)
   if not config.isEnabled then return retval end
 
   local ok, error = pcall(auto_select_nearest_camp)
-  if not ok then log.debug('[Auto-Select Nearest Camp] ERROR: ' .. tostring(error)) end
+  if not ok then debug('ERROR: ' .. tostring(error)) end
   return retval
 end
 
@@ -167,9 +196,15 @@ re.on_config_save(save_config)
 
 re.on_draw_ui(function()
   if imgui.tree_node('Auto-Select Nearest Camp') then
-    local changed, isEnabled = imgui.checkbox('Enabled', config.isEnabled)
-    if changed then
+    local hasChangedIsEnabled, isEnabled = imgui.checkbox('Enabled', config.isEnabled)
+    if hasChangedIsEnabled then
       config.isEnabled = isEnabled
+      save_config()
+    end
+
+    local hasChangedIsDebug, isDebug = imgui.checkbox('Debug', config.isDebug)
+    if hasChangedIsDebug then
+      config.isDebug = isDebug
       save_config()
     end
 
