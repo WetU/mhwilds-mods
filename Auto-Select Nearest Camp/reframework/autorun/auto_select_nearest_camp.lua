@@ -81,14 +81,10 @@ local function get_target_pos(quest_accept_ui)
   ---@class app.cGUIQuestViewData : REManagedObject
   ---@field get_Stage fun(): app.FieldDef.STAGE
   ---@field get_TargetEmStartArea fun(): { m_value: integer }[]
-  local quest_view_data = quest_accept_ui:get_QuestOrderParam().QuestViewData
+  local active_quest_data = quest_accept_ui:get_QuestOrderParam().ActiveQuestData
 
-  local target_em_start_areas = quest_view_data:get_TargetEmStartArea()
-  local target_em_start_area = nil
-  for _, start_area in pairs(target_em_start_areas) do
-    target_em_start_area = start_area.m_value
-    break
-  end
+  local target_em_start_areas = active_quest_data:getTargetEmSetAreaNo()
+  local target_em_start_area = target_em_start_areas:get_element(0).m_value
 
   if target_em_start_area == nil then
     debug('ERROR: No starting area found for target')
@@ -102,7 +98,7 @@ local function get_target_pos(quest_accept_ui)
   local map_stage_draw_data = map_controller._MapStageDrawData
 
   ---@alias app.FieldDef.STAGE number
-  local stage = quest_view_data:get_Stage()
+  local stage = active_quest_data:getStage()
 
   ---@class app.user_data.MapStageDrawData.cDrawData : REManagedObject
   ---@field _AreaIconPosList System.Collections.Generic.List<app.user_data.MapStageDrawData.cAreaIconData>
@@ -154,9 +150,40 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list)
   return nearest_index
 end
 
+local hook_datas = nil;
+
+local function init_datas()
+  hook_datas = {
+    hasData = false,
+    quest_accept_ui = nil,
+    target_point_index = nil
+  };
+end
+
+init_datas();
+
+local function select_next_camp()
+  if not hook_datas.hasData then return end
+
+  local quest_accept_ui = hook_datas.quest_accept_ui
+  if not quest_accept_ui then return end
+
+  local target_point_index = hook_datas.target_point_index
+  if not target_point_index then return end
+
+  local input_ctrl = quest_accept_ui._StartPointList._InputCtrl
+  if not input_ctrl then return end
+
+  if input_ctrl:getSelectedIndex() ~= target_point_index then
+    input_ctrl:selectNextItem()
+  else
+    init_datas()
+  end
+end
+
 local function auto_select_nearest_camp()
   ---@type app.GUI050001
-  local quest_accept_ui = thread.get_hook_storage()['quest_accept_ui']
+  local quest_accept_ui = hook_datas.quest_accept_ui
   if quest_accept_ui == nil then return end
 
   local start_point_list = quest_accept_ui:get_CurrentStartPointList()
@@ -171,19 +198,22 @@ local function auto_select_nearest_camp()
     -- TODO: This isn't sufficient for updating the highlighted camp in the map preview.
     -- Interacting with GUI elements, but it won't happen on its own. See notes below.
     quest_accept_ui:call('setCurrentSelectStartPointIndex(System.Int32)', nearest_start_point_index)
+    hook_datas.target_point_index = nearest_start_point_index
+    hook_datas.hasData = true
   end
 end
 
 -- Grab the quest_accept_ui instance and store it in the ephemeral hook storage:
 -- https://cursey.github.io/reframework-book/api/thread.html#threadget_hook_storage
-local function on_pre_open(args)
-  local hook_storage = thread.get_hook_storage()
-  hook_storage['quest_accept_ui'] = sdk.to_managed_object(args[2])
+local function on_pre_initstartpoint(args)
+  if config.isEnabled then
+    hook_datas.quest_accept_ui = sdk.to_managed_object(args[2])
+  end
 
   return sdk.PreHookResult.CALL_ORIGINAL
 end
 
-local function on_post_open(retval)
+local function on_post_initstartpoint(retval)
   if not config.isEnabled then return retval end
 
   local ok, error = pcall(auto_select_nearest_camp)
@@ -192,7 +222,26 @@ local function on_post_open(retval)
 end
 
 local quest_accept_ui_t = sdk.find_type_definition('app.GUI050001')
-sdk.hook(quest_accept_ui_t:get_method('onOpen()'), on_pre_open, on_post_open)
+sdk.hook(quest_accept_ui_t:get_method('initStartPoint()'), on_pre_initstartpoint, on_post_initstartpoint)
+
+local function on_post_visibleupdate(retval)
+  if config.isEnabled and hook_datas.hasData then
+    select_next_camp()
+  end
+  return retval
+end
+
+local acceptlist_t = sdk.find_type_definition("app.GUI050001_AcceptList")
+sdk.hook(acceptlist_t:get_method('onVisibleUpdate()'), nil, on_post_visibleupdate)
+
+local function on_post_close(retval)
+  if hook_datas.hasData then
+    init_datas()
+  end
+  return retval
+end
+
+sdk.hook(quest_accept_ui_t:get_method('onClose()'), nil, on_post_close)
 
 re.on_config_save(save_config)
 
