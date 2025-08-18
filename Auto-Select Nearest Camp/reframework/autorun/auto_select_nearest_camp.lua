@@ -137,16 +137,18 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list)
 
   debugPos('quest target', target_pos)
 
-  for index, start_point in ipairs(start_point_list._items) do
-    local beacon_gimmick = start_point:get_BeaconGimmick()
-    local beacon_pos = beacon_gimmick:getPos()
-    local d2 = get_distance:call(nil, beacon_pos, target_pos)
-    if d2 < shortest_distance then
-      shortest_distance = d2
-      nearest_index = index
-    end
+  for index, start_point in pairs(start_point_list._items) do
+    if start_point then
+      local beacon_gimmick = start_point:get_BeaconGimmick()
+      local beacon_pos = beacon_gimmick:getPos()
+      local d2 = get_distance:call(nil, beacon_pos, target_pos)
+      if d2 < shortest_distance then
+        shortest_distance = d2
+        nearest_index = index
+      end
 
-    debugPos('start point at index ' .. tostring(index), beacon_pos, d2)
+      debugPos('start point at index ' .. tostring(index), beacon_pos, d2)
+    end
   end
 
   return nearest_index
