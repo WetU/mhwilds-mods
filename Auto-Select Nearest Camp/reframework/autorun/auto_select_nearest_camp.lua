@@ -37,19 +37,8 @@ load_config()
 ---@field call fun(REManagedObject, ...): any
 ---@field get_field fun(REManagedObject, string): any
 
----@class Vector3f: { x: number, y: number, z: number }
-
----@class app.cGUIBeaconGimmick : REManagedObject
----@field getPos fun(): Vector3f
-
----@class app.cStartPointInfo : REManagedObject
----@field get_BeaconGimmick fun(): app.cGUIBeaconGimmick
-
 ---@class System.Collections.Generic.List<T>: { _items: T[], _size: integer }
-
----@class app.GUI050001 : REManagedObject
----@field get_CurrentStartPointList fun(): System.Collections.Generic.List<app.cStartPointInfo>
----@field get_QuestOrderParam fun(): { QuestViewData: app.cGUIQuestViewData }
+---@class Vector3f: { x: number, y: number, z: number }
 
 ---@param message string
 local function debug(message)
@@ -78,9 +67,12 @@ end
 ---@param quest_accept_ui app.GUI050001
 ---@return Vector3f?
 local function get_target_pos(quest_accept_ui)
-  ---@class app.cGUIQuestViewData : REManagedObject
-  ---@field get_Stage fun(): app.FieldDef.STAGE
-  ---@field get_TargetEmStartArea fun(): { m_value: integer }[]
+  ---@class app.cGUIQuestOrderParam : REManagedObject
+  ---@field ActiveQuestData app.cActiveQuestData
+
+  ---@class app.cActiveQuestData : REManagedObject
+  ---@field getStage fun(): app.FieldDef.STAGE
+  ---@field getTargetEmSetAreaNo fun(): { get_element: fun(_, index: integer): { m_value: number } }
   local active_quest_data = quest_accept_ui:get_QuestOrderParam().ActiveQuestData
 
   local target_em_start_areas = active_quest_data:getTargetEmSetAreaNo()
@@ -134,7 +126,11 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list)
   debugPos('quest target', target_pos)
 
   for index, start_point in pairs(start_point_list._items) do
+    ---@class app.cStartPointInfo : REManagedObject
+    ---@field get_BeaconGimmick fun(): app.cGUIBeaconGimmick
     if start_point then
+      ---@class app.cGUIBeaconGimmick : REManagedObject
+      ---@field getPos fun(): Vector3f
       local beacon_gimmick = start_point:get_BeaconGimmick()
       local beacon_pos = beacon_gimmick:getPos()
       local d2 = get_distance:call(nil, beacon_pos, target_pos)
@@ -150,40 +146,30 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list)
   return nearest_index
 end
 
-local hook_datas = nil;
+-- In order to update the quest map preview, we need to incrementally update the start point input
+-- across multiple visible updates. Since we can't isolate our runtime to a single hook, we maintain
+-- a local storage object meant to emulate the ephemeral hook storage API.
+---@class HookStorageSingleton
+---@field quest_accept_ui app.GUI050001?
+---@field nearest_start_point_index integer
+---@field should_select_next_item_on_visible_update boolean
+local hook_storage_singleton = {
+  quest_accept_ui = nil,
+  nearest_start_point_index = 0,
+  should_select_next_item_on_visible_update = false,
+}
 
-local function init_datas()
-  hook_datas = {
-    hasData = false,
+local function reset_operation_hook_storage()
+  hook_storage_singleton = {
     quest_accept_ui = nil,
-    target_point_index = nil
-  };
+    nearest_start_point_index = 0,
+    should_select_next_item_on_visible_update = false,
+  }
 end
 
-init_datas();
-
-local function select_next_camp()
-  if not hook_datas.hasData then return end
-
-  local quest_accept_ui = hook_datas.quest_accept_ui
-  if not quest_accept_ui then return end
-
-  local target_point_index = hook_datas.target_point_index
-  if not target_point_index then return end
-
-  local input_ctrl = quest_accept_ui._StartPointList._InputCtrl
-  if not input_ctrl then return end
-
-  if input_ctrl:getSelectedIndex() ~= target_point_index then
-    input_ctrl:selectNextItem()
-  else
-    init_datas()
-  end
-end
-
-local function auto_select_nearest_camp()
-  ---@type app.GUI050001
-  local quest_accept_ui = hook_datas.quest_accept_ui
+-- Find the nearest start point and set it in the hook storage.
+local function identify_nearest_start_point()
+  local quest_accept_ui = hook_storage_singleton.quest_accept_ui
   if quest_accept_ui == nil then return end
 
   local start_point_list = quest_accept_ui:get_CurrentStartPointList()
@@ -195,53 +181,84 @@ local function auto_select_nearest_camp()
 
   local nearest_start_point_index = get_index_of_nearest_start_point(target_pos, start_point_list)
   if nearest_start_point_index ~= nil and nearest_start_point_index > 0 then
-    -- TODO: This isn't sufficient for updating the highlighted camp in the map preview.
-    -- Interacting with GUI elements, but it won't happen on its own. See notes below.
+    -- This is required to update the "Departure Point" GUI item, but not the map preview:
     quest_accept_ui:call('setCurrentSelectStartPointIndex(System.Int32)', nearest_start_point_index)
-    hook_datas.target_point_index = nearest_start_point_index
-    hook_datas.hasData = true
+    -- Update hook storage with data for subsequent updates:
+    hook_storage_singleton.nearest_start_point_index = nearest_start_point_index
+    hook_storage_singleton.should_select_next_item_on_visible_update = true
   end
 end
 
--- Grab the quest_accept_ui instance and store it in the ephemeral hook storage:
--- https://cursey.github.io/reframework-book/api/thread.html#threadget_hook_storage
-local function on_pre_initstartpoint(args)
+-- After each visible update, attempt to increment the start point in the input control GUI item.
+-- This needs to be done iteratively across repaints in order to prevent race conditions;
+-- the quest map preview will not show the correct start point otherwise.
+local function select_next_start_point()
+  local quest_accept_ui = hook_storage_singleton.quest_accept_ui
+  local nearest_start_point_index = hook_storage_singleton.nearest_start_point_index
+  if not quest_accept_ui or not nearest_start_point_index then
+    hook_storage_singleton.should_select_next_item_on_visible_update = false
+    return
+  end
+
+  ---@class app.GUI050001_StartPointList : REManagedObject
+  ---@field _InputCtrl ace.cGUIInputCtrl_FluentItemsControlLink
+
+  ---@class ace.cGUIInputCtrl_FluentItemsControlLink : REManagedObject
+  ---@field getSelectedIndex fun(): integer
+  ---@field selectNextItem fun(): nil
+  local input_ctrl = quest_accept_ui._StartPointList._InputCtrl
+  if input_ctrl:getSelectedIndex() ~= nearest_start_point_index then
+    input_ctrl:selectNextItem()
+  else
+    hook_storage_singleton.should_select_next_item_on_visible_update = false
+  end
+end
+
+local function on_pre_init_start_point(args)
   if config.isEnabled then
-    hook_datas.quest_accept_ui = sdk.to_managed_object(args[2])
+    reset_operation_hook_storage()
+    ---@class app.GUI050001 : REManagedObject
+    ---@field _StartPointList app.GUI050001_StartPointList
+    ---@field get_CurrentStartPointList fun(): System.Collections.Generic.List<app.cStartPointInfo>
+    ---@field get_QuestOrderParam fun(): app.cGUIQuestOrderParam
+    hook_storage_singleton.quest_accept_ui = sdk.to_managed_object(args[2])
   end
 
   return sdk.PreHookResult.CALL_ORIGINAL
 end
 
-local function on_post_initstartpoint(retval)
-  if not config.isEnabled then return retval end
+local function on_post_init_start_point(retval)
+  if config.isEnabled then
+    local ok, error = pcall(identify_nearest_start_point)
+    if not ok then debug('ERROR: ' .. tostring(error)) end
+  end
 
-  local ok, error = pcall(auto_select_nearest_camp)
-  if not ok then debug('ERROR: ' .. tostring(error)) end
   return retval
 end
 
 local quest_accept_ui_t = sdk.find_type_definition('app.GUI050001')
-sdk.hook(quest_accept_ui_t:get_method('initStartPoint()'), on_pre_initstartpoint, on_post_initstartpoint)
 
-local function on_post_visibleupdate(retval)
-  if config.isEnabled and hook_datas.hasData then
-    select_next_camp()
-  end
-  return retval
-end
-
-local acceptlist_t = sdk.find_type_definition("app.GUI050001_AcceptList")
-sdk.hook(acceptlist_t:get_method('onVisibleUpdate()'), nil, on_post_visibleupdate)
+sdk.hook(quest_accept_ui_t:get_method('initStartPoint()'), on_pre_init_start_point, on_post_init_start_point)
 
 local function on_post_close(retval)
-  if hook_datas.hasData then
-    init_datas()
+  if hook_storage_singleton.quest_accept_ui then
+    reset_operation_hook_storage()
   end
   return retval
 end
 
 sdk.hook(quest_accept_ui_t:get_method('onClose()'), nil, on_post_close)
+
+local function on_post_visible_update(retval)
+  if config.isEnabled and hook_storage_singleton.should_select_next_item_on_visible_update then
+    select_next_start_point()
+  end
+  return retval
+end
+
+local accept_list_t = sdk.find_type_definition("app.GUI050001_AcceptList")
+
+sdk.hook(accept_list_t:get_method('onVisibleUpdate()'), nil, on_post_visible_update)
 
 re.on_config_save(save_config)
 
@@ -264,65 +281,3 @@ re.on_draw_ui(function()
 end)
 
 log.info('[Auto-Select Nearest Camp] Initialized')
-
---[[
-NOTES:
-
-Everything works as expected, except the highlighted camp won't update automatically.
-There's something connecting app.GUI050001 to the map (app.GUI060008), but I can't figure it out.
-Ideally it's just a state in something type or singleton I haven't found yet (plausible), but it's
-also possible that there's something low-level deep in the GUI architecture that's harder to parse.
-
-Loose notes on types and methods I've tried:
-
-- app.GUI050001
-  - changeDarwSegmentDefault() [sic]
-  - changeDrawSegmentForStartPointList()
-  - clearStartPointGimmickDraw()
-  - clearFocusStartPointIcon()
-  - decrementSelectStartPointIndex()
-  - incrementSelectStartPointIndex()
-  - initStartPoint()
-  - mapForceSelectFloor()
-  - setActiveStartPointList(System.Boolean)
-    - Toggles the start point list submenu, which doesn't update the highlight programmatically,
-      even though toggling it with any user input does.
-  - setFocusStartPointIcon(System.Int32)
-    - setSelectFloorFastTravelGmLocated(app.cGUIBeaconBase)
-  - updateStartPointText()
-  - _AcceptList: app.GUI050001_AcceptList
-    - callbackDecide(via.gui.Control, via.gui.SelectItem, System.UInt32)
-    - _InputCtrl: ace.cGUIInputCtrl_FluentItemsControlLink`2<app.GUIID.ID,app.GUIFunc.TYPE>
-      - I started to get pretty deep into the GUI stuff here; it's weird that clicking these works,
-        but invoking their observable callbacks programmatically doesn't.
-      - changeItemIndexToFicIndex(System.UInt32)
-      - changeItemNumFluent(System.UInt32, System.Boolean)
-      - executeCallback()
-      - onMouseDecide(via.gui.SelectItem)
-      - funcDecideEvent()
-      - funcMouseDecideEvent()
-      - requestCallDecide()
-      - selectItemOnMouseEvent(via.gui.SelectItem)
-      - _FicLink: via.gui.FluentItemsControlLink
-      - _FlsList: ace.cGUIInputCtrl_FluentScrollList`2<app.GUIID.ID,app.GUIFunc.TYPE>
-      - _SelectedIndex: System.UInt32
-    - _OptionalDisplayItem_StartPoint: via.gui.SelectItem
-      - decide()
-  - _StartPointList: app.GUI050001_StartPointList
-
-- app.GUI060008 (accessible via app.cGUIMapController:get_GUIGround())
-  - applyColorSummary()
-  - clearColorSummary()
-  - updateSummary()
-  - updateRequestQuestEmArea(app.GUI060008.cRequestQuestEmArea)
-  - _FloorController: app.cGUI3DMapStageModelController
-    - _FloorListCtrl: app.cGUI3DMapFloorListController
-
-- app.cGUIMapController (accessible via app.GUIManager singleton)
-  - clearQuestBoardDummyIcon()
-  - forceInteractBeacon(app.cGUIBeaconBase)
-  - mapForceSelectFloor(System.Func`1<System.Int32>)
-  - setImmediateSelectFloor(System.Int32)
-  - setQuestBoardDummyIcon(app.cGUIQuestViewData)
-  - setSelectFloor(System.Int32)
-]] --
