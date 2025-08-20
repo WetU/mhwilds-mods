@@ -60,12 +60,13 @@ local function debugPos(label, pos, distance)
   end
 end
 
+local getFloorNumFromAreaNum = sdk.find_type_definition("app.GUIUtilApp.MapUtil"):get_method("getFloorNumFromAreaNum(app.FieldDef.STAGE, System.Int32)");
 -- Returns the approximate position of the first target monster for a quest.
 -- Target locations are encoded only as area numbers (e.g. Uth Duna usually spawns in area 17);
 -- in order to convert this to a position, we need to retrieve the map data for the quest stage,
 -- which contains icon positions associated with each area.
 ---@param quest_accept_ui app.GUI050001
----@return Vector3f?
+---@return integer, Vector3f?, integer
 local function get_target_pos(quest_accept_ui)
   ---@class app.cGUIQuestOrderParam : REManagedObject
   ---@field QuestViewData app.cGUIQuestViewData
@@ -106,13 +107,14 @@ local function get_target_pos(quest_accept_ui)
     return nil
   end
 
+  local floor_num = getFloorNumFromAreaNum:call(nil, stage, target_em_start_area)
   local area_icon_pos_list = stage_draw_data._AreaIconPosList
   ---@class app.user_data.MapStageDrawData.cAreaIconData : REManagedObject
   ---@field _AreaIconPos Vector3f
   ---@field _AreaNum integer
   for _, area_icon_data in pairs(area_icon_pos_list._items) do
     if area_icon_data._AreaNum == target_em_start_area then
-      return area_icon_data._AreaIconPos
+      return stage, area_icon_data._AreaIconPos, floor_num
     end
   end
 end
@@ -125,9 +127,11 @@ local get_distance = sdk.find_type_definition('via.MathEx'):get_method('distance
 ---@param target_pos Vector3f
 ---@param start_point_list System.Collections.Generic.List<app.cStartPointInfo>
 ---@return integer
-local function get_index_of_nearest_start_point(target_pos, start_point_list)
-  local shortest_distance = math.huge
-  local nearest_index = 0
+local function get_index_of_nearest_start_point(target_pos, start_point_list, stage, target_floor_num)
+  local same_floor_shortest_distance = nil
+  local same_floor_nearest_index = nil
+  local diff_floor_shortest_distance = nil
+  local diff_floor_nearest_index = nil
 
   debugPos('quest target', target_pos)
 
@@ -139,17 +143,35 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list)
       ---@field getPos fun(): Vector3f
       local beacon_gimmick = start_point:get_BeaconGimmick()
       local beacon_pos = beacon_gimmick:getPos()
+      local context_holder = beacon_gimmick:get_ContextHolder()
+      local gimmick_context = context_holder:get_Gimmick()
+      local field_area_info = gimmick_context:get_FieldAreaInfo()
+      local beacon_area_num = field_area_info:get_MapAreaNumSafety()
+      local beacon_floor_num = getFloorNumFromAreaNum:call(nil, stage, beacon_area_num)
       local d2 = get_distance:call(nil, beacon_pos, target_pos)
-      if d2 < shortest_distance then
-        shortest_distance = d2
-        nearest_index = index
+      if beacon_floor_num == target_floor_num then
+        if same_floor_shortest_distance nil or d2 < same_floor_shortest_distance then
+          same_floor_shortest_distance = d2
+          same_floor_nearest_index = index
+        end
+      else
+        if diff_floor_shortest_distance == nil or d2 < diff_floor_shortest_distance then
+          diff_floor_shortest_distance = d2
+          diff_floor_nearest_index = index
+        end
       end
 
       debugPos('start point at index ' .. tostring(index), beacon_pos, d2)
     end
   end
 
-  return nearest_index
+  if same_floor_shortest_distance ~= nil and diff_floor_shortest_distance ~= nil and diff_floor_shortest_distance < same_floor_shortest_distance * 0.5 then
+    return diff_floor_nearest_index
+  elseif same_floor_nearest_index ~= nil then
+    return same_floor_nearest_index
+  elseif diff_floor_nearest_index ~= nil then
+    return diff_floor_nearest_index
+  end
 end
 
 -- In order to update the quest map preview, we need to incrementally update the start point input
@@ -162,6 +184,7 @@ end
 local hook_storage_singleton = {
   quest_accept_ui = nil,
   nearest_start_point_index = 0,
+  select_direction = "forward",
   should_select_next_item_on_visible_update = false,
 }
 
@@ -179,18 +202,21 @@ local function identify_nearest_start_point()
   if quest_accept_ui == nil then return end
 
   local start_point_list = quest_accept_ui:get_CurrentStartPointList()
+  if start_point_list == nil then return end
+  local start_point_size = start_point_list._size
   -- Exit early if the list only has 1 item:
-  if start_point_list == nil or start_point_list._size <= 1 then return end
-
-  local target_pos = get_target_pos(quest_accept_ui)
+  if start_point_size <= 1 then return end
+  
+  local stage, target_pos, target_floor_num = get_target_pos(quest_accept_ui)
   if target_pos == nil then return end
 
-  local nearest_start_point_index = get_index_of_nearest_start_point(target_pos, start_point_list)
+  local nearest_start_point_index = get_index_of_nearest_start_point(target_pos, start_point_list, stage, target_floor_num)
   if nearest_start_point_index ~= nil and nearest_start_point_index > 0 then
     -- This is required to update the "Departure Point" GUI item, but not the map preview:
     quest_accept_ui:call('setCurrentSelectStartPointIndex(System.Int32)', nearest_start_point_index)
     -- Update hook storage with data for subsequent updates:
     hook_storage_singleton.nearest_start_point_index = nearest_start_point_index
+    hook_storage_singleton.select_direction = nearest_start_point_index + 1 < start_point_size / 2 and "reverse" or "forward"
     hook_storage_singleton.should_select_next_item_on_visible_update = true
   end
 end
@@ -214,7 +240,11 @@ local function select_next_start_point()
   ---@field selectNextItem fun(): nil
   local input_ctrl = quest_accept_ui._StartPointList._InputCtrl
   if input_ctrl:getSelectedIndex() ~= nearest_start_point_index then
-    input_ctrl:selectNextItem()
+    if hook_storage_singleton.select_direction == "forward" then
+      input_ctrl:selectNextItem()
+    else
+      input_ctrl:selectPrevItem()
+    end
   else
     hook_storage_singleton.should_select_next_item_on_visible_update = false
   end
