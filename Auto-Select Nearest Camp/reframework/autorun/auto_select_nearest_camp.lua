@@ -150,7 +150,7 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list, st
       local beacon_floor_num = getFloorNumFromAreaNum:call(nil, stage, beacon_area_num)
       local d2 = get_distance:call(nil, beacon_pos, target_pos)
       if beacon_floor_num == target_floor_num then
-        if same_floor_shortest_distance nil or d2 < same_floor_shortest_distance then
+        if same_floor_shortest_distance == nil or d2 < same_floor_shortest_distance then
           same_floor_shortest_distance = d2
           same_floor_nearest_index = index
         end
