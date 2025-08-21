@@ -146,8 +146,7 @@ local function get_index_of_nearest_start_point(target_pos, start_point_list, st
       local context_holder = beacon_gimmick:get_ContextHolder()
       local gimmick_context = context_holder:get_Gimmick()
       local field_area_info = gimmick_context:get_FieldAreaInfo()
-      local beacon_area_num = field_area_info:get_MapAreaNumSafety()
-      local beacon_floor_num = getFloorNumFromAreaNum:call(nil, stage, beacon_area_num)
+      local beacon_floor_num = field_area_info:get_MapFloorNumSafety()
       local d2 = get_distance:call(nil, beacon_pos, target_pos)
       if beacon_floor_num == target_floor_num then
         if same_floor_shortest_distance == nil or d2 < same_floor_shortest_distance then
