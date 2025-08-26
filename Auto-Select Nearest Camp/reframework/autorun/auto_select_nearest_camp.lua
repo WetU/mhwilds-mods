@@ -65,16 +65,16 @@ local getFloorNumFromAreaNum = sdk.find_type_definition("app.GUIUtilApp.MapUtil"
 -- Target locations are encoded only as area numbers (e.g. Uth Duna usually spawns in area 17);
 -- in order to convert this to a position, we need to retrieve the map data for the quest stage,
 -- which contains icon positions associated with each area.
----@param quest_accept_ui app.GUI050001
+---@param quest_order_param app.cGUIQuestOrderParam
 ---@return integer, Vector3f?, integer
-local function get_target_pos(quest_accept_ui)
+local function get_target_pos(quest_order_param)
   ---@class app.cGUIQuestOrderParam : REManagedObject
   ---@field QuestViewData app.cGUIQuestViewData
 
   ---@class app.cGUIQuestViewData : REManagedObject
   ---@field get_Stage fun(): app.FieldDef.STAGE
   ---@field get_TargetEmStartArea fun(): { m_value: integer }[]
-  local quest_view_data = quest_accept_ui:get_QuestOrderParam().QuestViewData
+  local quest_view_data = quest_order_param.QuestViewData
 
   local target_em_start_areas = quest_view_data:get_TargetEmStartArea()
   local target_em_start_area = nil
@@ -213,13 +213,19 @@ local function identify_nearest_start_point()
   local quest_accept_ui = hook_storage_singleton.quest_accept_ui
   if quest_accept_ui == nil then return end
 
+  local quest_order_param = quest_accept_ui:get_QuestOrderParam()
+  if quest_order_param == nil then return end
+
+  local is_same_stage = quest_order_param:get_IsSameStageDeclaration()
+  if is_same_stage then return end
+
   local start_point_list = quest_accept_ui:get_CurrentStartPointList()
   if start_point_list == nil then return end
   local start_point_size = start_point_list._size
   -- Exit early if the list only has 1 item:
   if start_point_size <= 1 then return end
   
-  local stage, target_pos, target_area_num, target_floor_num = get_target_pos(quest_accept_ui)
+  local stage, target_pos, target_area_num, target_floor_num = get_target_pos(quest_order_param)
   if target_pos == nil then return end
 
   local nearest_start_point_index = get_index_of_nearest_start_point(target_pos, start_point_list, stage, target_area_num, target_floor_num)
